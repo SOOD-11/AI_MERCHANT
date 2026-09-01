@@ -12,6 +12,14 @@ export const pool = mysql.createPool({
   connectionLimit: 10,
 });
 
+
+ export async function  query(sql:string,params: any[]){
+const [rows]=await pool.query(sql,params);
+return rows;
+
+};
+
+
 async function test(){
 
 try {
@@ -28,3 +36,5 @@ try {
 test();
 
 }
+
+

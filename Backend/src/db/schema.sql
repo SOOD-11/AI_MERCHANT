@@ -45,6 +45,7 @@ CREATE TABLE IF NOT EXISTS policies (
     merchant_id VARCHAR(36) NOT NULL,
     min_gross_margin_percent DECIMAL(5,2) NOT NULL,
     max_autonomous_spend_inr DECIMAL(5,2) NOT NULL,
+    max_discount_percent DECIMAL(12,2) not null,
     created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
 
     FOREIGN KEY (merchant_id) REFERENCES merchants(id)
