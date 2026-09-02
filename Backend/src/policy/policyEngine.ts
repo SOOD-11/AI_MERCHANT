@@ -7,7 +7,7 @@ maxDiscountPercent: number;
 
 export interface PolicyCheckInput{
 
-actionType: 'BUYER_DISCOUNT' | 'SUPPLIER_PURCHASE' | 'PRICE_OVERRIDE';
+actionType?: 'BUYER_DISCOUNT' | 'SUPPLIER_PURCHASE' | 'PRICE_OVERRIDE';
 unitCost : number;
 offeredPrice: number;
 msrp:number;

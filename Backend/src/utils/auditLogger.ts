@@ -2,7 +2,7 @@ import { randomUUID } from "crypto";
 import { query } from "../db/connection.js";
 
 interface AuditLogInput{
-orderId?: string;
+orderId?: string  | null;
 agentRole: string;
 action: string;
 inputJson?: any;
