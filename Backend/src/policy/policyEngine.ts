@@ -18,7 +18,7 @@ quantity:number;
 
 export interface PolicyCheckOutput{
 allowed: boolean;
-verdict:'Overspend'|'Rejected' |'Approved';
+verdict:'ESCLATED_OVERSPEND'|'REJECTED' |'APPROVED';
 marginPercent: number;
 totalAmount: number;
 requiresHumanApproval: boolean;

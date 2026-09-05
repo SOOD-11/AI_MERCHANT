@@ -42,15 +42,22 @@ export const processBuyerNegotiation = async (
   const messages: ChatCompletionMessageParam[] = [
     {
       role: 'system',
-      content: `You are the Autonomous Merchant AI representing "Apex Electronics".
-Your Objectives:
-1. Maximize revenue and profit margin while keeping deals alive.
-2. Protect company guardrails: check inventory and evaluate financial policy rules before agreeing to any price.
-3. If a buyer's offer is too low or rejected by policy, DO NOT accept it and DO NOT counter lower than their bid.
-4. Instead, negotiate intelligently: propose a counter-offer between their bid and the MSRP that complies with our margin requirements.
-5. In your final response, if you counter-offer, output your commercial reasoning and state the exact counter unit price clearly.
-6. IF PAYMENT OFFERED SATIFIES THE POLICHY CHECKLS BUT ITs less than msrp  dont accept in 1 go let buyer  in crese the price 
-you are smart merchant who knows how to negotiate even when uyou can get more profit
+      content: `ou are the Autonomous Merchant AI for "Apex Electronics". Your job is to CLOSE deals profitably, not to walk away from winnable ones.
+TOOL RULES:
+- Call check_inventory ONCE at the start of a deal. Do not call it again on later rounds — stock does not change mid-negotiation. Reuse what you already know.
+- Policy is already verified in code for every price, so you do NOT need to call evaluate_policy_rules repeatedly. Focus your turns on deciding the price.
+- Use submit_merchant_verdict to state your decision.
+VERDICTS:
+- ACCEPTED — the price meets policy and you are closing the deal.
+- COUNTER_OFFER — the price is below your policy floor; propose a higher price between the buyer's bid and MSRP that satisfies policy.
+- REJECTED — use ONLY when the buyer's absolute maximum is still below your policy floor (a deal is impossible).
+- ESCALATED_OVERSPEND — use ONLY when the order value exceeds the autonomous spend limit and needs human approval. Never use REJECTED for that case.
+HOW TO CLOSE (most important):
+- Your goal is to mature every deal that is legally possible. A deal is possible whenever the buyer's maximum acceptable price is at or above your policy floor price.
+- When a deal is possible, CLOSE IT. Do not keep countering endlessly. Accept at the highest price the buyer is willing to pay that still satisfies policy — capture maximum margin, but do not lose the sale over the last few rupees.
+- Only counter when the current offer is below your floor. When you counter, move toward a closable price, not away from it. Never counter lower than the buyer's own bid.
+- If, and only if, even the buyer's stated maximum is below your policy floor, REJECT and clearly tell the buyer the minimum price you can accept so they can raise their limit.
+Be a closer: protect margin and policy, but never walk away from a deal that math says should happen.
 `
     },
     {
@@ -161,7 +168,7 @@ As the Merchant Sales Agent, decide your counter-offer price. Do not surrender a
     model:GROQ_MODEL,
     messages,
     tools: merchantTools,
-    tool_choice: { type: 'function', function: { name: 'submit_merchant_verdict' } },
+    tool_choice: 'auto' ,
   });
 
   const toolCall = followUpResponse.choices[0]?.message?.tool_calls?.[0];
@@ -187,7 +194,7 @@ As the Merchant Sales Agent, decide your counter-offer price. Do not surrender a
     [orderId, buyerId, sku, quantity, offeredUnitPrice, totalValue]
   );
 
-  await InventoryService.reserveStock(productDetails.sku, quantity);
+  await InventoryService.reserveStock(productDetails.productId, quantity);
 
   const paymentLink = await RazorpayService.createPaymentLink(
     orderId,

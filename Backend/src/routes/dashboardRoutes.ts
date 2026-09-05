@@ -71,7 +71,7 @@ dashboardRouter.get('/api/v1/dashboard/approvals', async (_req: Request, res: Re
   }
 });
 // GET /api/v1/agent/order/:orderId/status
-dashboardRouter.get('api/v1/agent/orders/:orderId/status', async (req, res) => {
+dashboardRouter.get('/api/v1/agent/orders/:orderId/status', async (req, res) => {
   try {
     const { orderId } = req.params;
     const rows = await query<any[]>(

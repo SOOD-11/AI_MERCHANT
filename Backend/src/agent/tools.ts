@@ -72,7 +72,7 @@ export const merchantTools: ChatCompletionTool[] = [
     type: 'function',
     function: {
       name: 'evaluate_policy_rules',
-      description: 'Verify financial guardrails: minimum gross margin (>=15%) and autonomous spend limit (<=50000 INR).',
+      description: 'Verify financial guardrails: minimum gross margin and autonomous spend limit.',
       parameters: {
         type: 'object',
         properties: {
@@ -97,7 +97,7 @@ export const merchantTools: ChatCompletionTool[] = [
       properties: {
         verdict: {
           type: 'string',
-          enum: ['ACCEPTED', 'COUNTER_OFFER', 'REJECTED'],
+          enum: ['ACCEPTED', 'COUNTER_OFFER', 'REJECTED','ESCALATED_OVERSPEND'],
           description: 'Your commercial decision on the deal.',
         },
         counterUnitPrice: {
@@ -138,6 +138,7 @@ export const executeToolCall = async (name: string, args: any): Promise<any> => 
       if (!product) return { error: `Product SKU ${args.sku} not found.` };
       return {
         sku: product.sku,
+        productId: product.productId,
         name: product.name,
         availableStock: product.quantityAvailable,
         reservedStock: product.quantityReserved,

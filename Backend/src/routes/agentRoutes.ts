@@ -168,13 +168,17 @@ const msrp = Number(selectedProduct.msrp);
 
     let currentBid: number;
     let maxBudgetPerUnit: number;
-if (parsedIntent.maxBudgetPerUnit != null) {
-  maxBudgetPerUnit = Number(parsedIntent.maxBudgetPerUnit);
-  currentBid =parsedIntent.targetInitialBid != null ? Number(parsedIntent.targetInitialBid): maxBudgetPerUnit;
+const parsedBudget = Number(parsedIntent.maxBudgetPerUnit);
+const parsedInitial = Number(parsedIntent.targetInitialBid);
+const hasBudget = Number.isFinite(parsedBudget) && parsedBudget > 0;
+const hasInitial = Number.isFinite(parsedInitial) && parsedInitial > 0;
+
+if (hasBudget) {
+  maxBudgetPerUnit = parsedBudget;
+  currentBid = hasInitial ? parsedInitial : parsedBudget;
 } else {
   maxBudgetPerUnit = msrp;
   currentBid = Math.round(msrp);
-
 }
     let previousCounter: number | undefined = undefined;
     let round = 1;

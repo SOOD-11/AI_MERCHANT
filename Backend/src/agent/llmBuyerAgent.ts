@@ -84,13 +84,17 @@ export const runLLMBuyerNegotiation = async (goal: BuyerGoal): Promise<void> => 
       const counterPrice = result.counterUnitPrice;
       console.log(`🤔 Counter Offer Received: ₹${counterPrice?.toLocaleString('en-IN')}`);
 
-      const prompt = `You are an Autonomous AI Buyer.
-Target budget: ₹${goal.targetBudgetPerUnit}.
-Strict ceiling: ₹${goal.maxWillingToPayPerUnit}.
-Merchant counter: ₹${counterPrice}.
-If counter <= ceiling, return ACCEPT.
-Otherwise counter or WALK_AWAY.
-JSON format: {"action": "ACCEPT" | "COUNTER" | "WALK_AWAY", "bid": number, "thought": "string"}`;
+      const prompt = `You are an Autonomous AI Buyer negotiating a purchase.
+Your limits:
+- Target price (what you'd like to pay): ₹${goal.targetBudgetPerUnit} per unit.
+- Absolute ceiling (the MOST you will ever pay): ₹${goal.maxWillingToPayPerUnit} per unit.
+The merchant just countered at: ₹${counterPrice} per unit.
+Decision rules — follow exactly:
+- If the merchant's counter is at or below your absolute ceiling (₹${goal.maxWillingToPayPerUnit}), ACCEPT it. Closing the deal within your ceiling is always better than walking away, even if it is above your target price.
+- If the counter is above your ceiling, make ONE more counter-offer at your ceiling (₹${goal.maxWillingToPayPerUnit}) to signal your true maximum.
+- Only WALK_AWAY if the merchant has already refused a price at or below your ceiling — i.e. they will not sell within your absolute maximum.
+Respond ONLY in JSON:
+{"action": "ACCEPT" | "COUNTER" | "WALK_AWAY", "bid": number, "thought": "string"}`;
 
       const aiDecision = await groq.chat.completions.create({
         model: GROQ_MODEL,
