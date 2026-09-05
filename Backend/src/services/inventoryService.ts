@@ -1,78 +1,87 @@
-import {query} from '../db/connection.js';
+import { query } from '../db/connection.js';
 
-interface ProductInventoryRecord{
-productId: string;
-sku: string;
-name: string;
-msrp :number;
-baseCost: number;
-quantityAvailable: number;
-quantityReserved: number;
-
+export interface ProductInventoryRecord {
+  productId: string;
+  sku: string;
+  name: string;
+  msrp: number;
+  baseCost: number;
+  quantityAvailable: number;
+  quantityReserved: number;
 }
 
+export const InventoryService = {
+  getProductBySku: async (sku: string): Promise<ProductInventoryRecord | null> => {
+    const rows = (await query(
+      `SELECT 
+        p.id AS productId,
+        p.sku,
+        p.name,
+        p.msrp,
+        p.base_cost AS baseCost,
+        i.quantity_available AS quantityAvailable,
+        i.quantity_reserved AS quantityReserved 
+      FROM products p 
+      JOIN inventory i ON p.id = i.product_id 
+      WHERE p.sku = ? 
+      LIMIT 1`,
+      [sku]
+    )) as ProductInventoryRecord[];
 
- export const InventoryService={
- getProductBySku : async(sku :string) :Promise<ProductInventoryRecord | null> =>{
+    if (!rows || rows.length === 0) return null;
+    const r = rows[0];
 
-const rows= await query(`select p.id as productId,p.sku ,p.name,p.msrp, p.base_cost as baseCost,
-    i.quantity_available as quantityAvailable,
-    i.quantity_reserved as quantityReserved 
-    from products p join inventory i 
-    on  p.id=i.product_id 
-    where p.sku= ? 
-    Limit 1`,
-    [sku]) as ProductInventoryRecord[];
+    return {
+      productId: r.productId,
+      sku: r.sku,
+      name: r.name,
+      msrp: Number(r.msrp),
+      baseCost: Number(r.baseCost),
+      quantityAvailable: Number(r.quantityAvailable),
+      quantityReserved: Number(r.quantityReserved),
+    };
+  },
 
-if(rows.length === 0) return null;
-const r=rows[0];
+  /**
+   * Phase 1: Hold stock during deal acceptance / payment link creation
+   * Decrements available and increments reserved atomically.
+   */
+  reserveStock: async (productId: string, quantity: number): Promise<boolean> => {
+    const result: any = await query(
+      `UPDATE inventory 
+       SET quantity_available = quantity_available - ?, 
+           quantity_reserved = quantity_reserved + ? 
+       WHERE product_id = ? AND quantity_available >= ?`,
+      [quantity, quantity, productId, quantity]
+    );
 
-return {
+    return (result?.affectedRows ?? 0) > 0;
+  },
 
+  /**
+   * Phase 2: Called by Webhook upon successful payment
+   * Consumes reserved stock without touching available stock.
+   */
+  finalizeDeduction: async (productId: string, quantity: number): Promise<void> => {
+    await query(
+      `UPDATE inventory 
+       SET quantity_reserved = GREATEST(0, quantity_reserved - ?) 
+       WHERE product_id = ?`,
+      [quantity, productId]
+    );
+  },
 
-    productId:r.productId,
-    sku:r.sku,
-    name:r.name,
-    msrp: r.msrp,
-    baseCost:r.baseCost,
-    quantityAvailable:r.quantityAvailable,
-    quantityReserved:r.quantityReserved,
-
-}
-
-
-
- },
-
-
- reserveStock : async(productId: string,quantity:  number) : Promise<boolean> =>{
-
-const result= await query(`update inventory Set quantity_available=quantity_available-? ,quantity_reserved=quantity_reserved+ ? where product_id = ? and quantity_available >=?`,[quantity,quantity,productId,quantity]);
-
-return result.affectedRows>0;
-
-
- },
-
-finalizeDeduction: async(productId : string,quantity :number): Promise<void> =>{
-
-await query(`update inventory 
-     set quantity_reserved=quantity_reserved - ? 
-     where product_id=? `,
-     [quantity,productId]);
-},
-
-releaseReservation: async(productId: string,quantity: number): Promise<void> =>{
-await query(`update inventory 
-     set quantity_available=quantity_available + ?
-     ,quantity_reserved=quantity_reserved - ? 
-     where productId= ?`,
-     [quantity,quantity,productId]);
-
-}
-
-
-
+  /**
+   * Rollback: Called if payment link expires, fails, or is cancelled
+   * Moves reserved items back to available stock.
+   */
+  releaseReservation: async (productId: string, quantity: number): Promise<void> => {
+    await query(
+      `UPDATE inventory 
+       SET quantity_available = quantity_available + ?,
+           quantity_reserved = GREATEST(0, quantity_reserved - ?) 
+       WHERE product_id = ?`,
+      [quantity, quantity, productId]
+    );
+  },
 };
-
-

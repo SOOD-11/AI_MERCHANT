@@ -70,7 +70,30 @@ dashboardRouter.get('/api/v1/dashboard/approvals', async (_req: Request, res: Re
     res.status(500).json({ error: error.message || 'Failed to fetch approvals' });
   }
 });
+// GET /api/v1/agent/order/:orderId/status
+dashboardRouter.get('api/v1/agent/orders/:orderId/status', async (req, res) => {
+  try {
+    const { orderId } = req.params;
+    const rows = await query<any[]>(
+      `SELECT id, status, total_price, unit_price, quantity, created_at 
+       FROM orders WHERE id = ? LIMIT 1`,
+      [orderId]
+    );
 
+    if (!rows.length) {
+      return res.status(404).json({ error: 'Order not found' });
+    }
+
+    res.json({
+      orderId: rows[0].id,
+      status: rows[0].status, // 'pending_payment' or 'paid'
+      totalPrice: rows[0].total_price,
+      quantity: rows[0].quantity,
+    });
+  } catch (error: any) {
+    res.status(500).json({ error: error.message });
+  }
+});
 // Human Approval Action Decision
 dashboardRouter.post('/api/v1/dashboard/approvals/:id/decide', async (req: Request, res: Response) => {
   try {

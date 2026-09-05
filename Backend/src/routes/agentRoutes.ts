@@ -1,13 +1,14 @@
 import { Router, type Request, type Response } from 'express';
 import { query } from '../db/connection.js';
 import { processBuyerNegotiation } from '../agent/merchantAgent.js';
-
 import type { BuyerNegotiationRequest } from '../agent/merchantAgent.js';
 import { executeAutonomousRazorpayPayment } from '../agent/headlesspayer.js';
 import { groq, GROQ_MODEL } from '../services/groqClient.js';
+import { executeSupplierProcurement } from '../services/procurmentManagement.js';
+
 export const agentRouter = Router();
 
-// Machine-Readable Agent Discovery Catalog
+// 1. Machine-Readable Agent Discovery Catalog
 agentRouter.get('/.well-known/agent-commerce.json', async (_req: Request, res: Response) => {
   try {
     const merchantRows = await query<any[]>(`SELECT id, name, email FROM merchants LIMIT 1`);
@@ -45,109 +46,46 @@ agentRouter.get('/.well-known/agent-commerce.json', async (_req: Request, res: R
   }
 });
 
-// Transactional Negotiation Endpoint
-// Transactional Negotiation Endpoint
-agentRouter.post(
-  '/api/v1/agent/negotiate',
-  async (req: Request, res: Response) => {
+// 2. Transactional Negotiation Endpoint (Bilateral API-level call)
+agentRouter.post('/api/v1/agent/negotiate', async (req: Request, res: Response) => {
+  try {
+    const { sku, quantity, offeredUnitPrice, buyerAgentId, previousCounterOffer } = req.body;
 
-    try {
-
-      const {
-        sku,
-        quantity,
-        offeredUnitPrice,
-        buyerAgentId,
-        previousCounterOffer
-      } = req.body;
-
-      // ============================================
-      // 1. BASIC VALIDATION
-      // ============================================
-
-      if (!sku || !quantity || !offeredUnitPrice) {
-
-        return res.status(400).json({
-          error:
-            'Missing required fields: sku, quantity, and offeredUnitPrice are mandatory.',
-        });
-
-      }
-
-      if (
-        quantity <= 0 ||
-        offeredUnitPrice <= 0
-      ) {
-
-        return res.status(400).json({
-          error:
-            'Quantity and offeredUnitPrice must be positive numbers.',
-        });
-
-      }
-
-      // ============================================
-      // 2. BUILD NEGOTIATION REQUEST
-      // ============================================
-
-      const payload: BuyerNegotiationRequest = {
-
-        sku: String(sku).trim(),
-
-        quantity: Number(quantity),
-
-        offeredUnitPrice:
-          Number(offeredUnitPrice),
-
-        buyerAgentId:
-          buyerAgentId
-            ? String(buyerAgentId)
-            : undefined,
-
-        // IMPORTANT:
-        // Pass the previous merchant counter
-        // into the negotiation engine.
-        previousCounterOffer:
-          previousCounterOffer !== undefined &&
-          previousCounterOffer !== null
-            ? Number(previousCounterOffer)
-            : undefined,
-      };
-
-      // ============================================
-      // 3. PROCESS NEGOTIATION
-      // ============================================
-
-      const decision =
-        await processBuyerNegotiation(payload);
-
-        console.log(decision);
-      return res.json(decision);
-
-    } catch (error: any) {
-
-      console.error(
-        'Error processing negotiation:',
-        error
-      );
-
-      return res.status(500).json({
-
-        status: 'REJECTED',
-
-        reason:
-          error.message ||
-          'Internal server error processing agent request.',
-
+    if (!sku || !quantity || !offeredUnitPrice) {
+      return res.status(400).json({
+        error: 'Missing required fields: sku, quantity, and offeredUnitPrice are mandatory.',
       });
-
     }
+
+    if (quantity <= 0 || offeredUnitPrice <= 0) {
+      return res.status(400).json({
+        error: 'Quantity and offeredUnitPrice must be positive numbers.',
+      });
+    }
+
+    const payload: BuyerNegotiationRequest = {
+      sku: String(sku).trim(),
+      quantity: Number(quantity),
+      offeredUnitPrice: Number(offeredUnitPrice),
+      buyerAgentId: buyerAgentId ? String(buyerAgentId) : undefined,
+      previousCounterOffer:
+        previousCounterOffer !== undefined && previousCounterOffer !== null
+          ? Number(previousCounterOffer)
+          : undefined,
+    };
+
+    const decision = await processBuyerNegotiation(payload);
+    return res.json(decision);
+  } catch (error: any) {
+    console.error('Error processing negotiation:', error);
+    return res.status(500).json({
+      status: 'REJECTED',
+      reason: error.message || 'Internal server error processing agent request.',
+    });
   }
-);
+});
 
-
-// 3. NEW: Autonomous Buyer Procurement Endpoint
-// Accepts natural language prompt -> Negotiates -> Pays on Razorpay -> Returns outcome
+// 3. Autonomous End-to-End Buyer Procurement Endpoint
 agentRouter.post('/api/v1/agent/procure', async (req: Request, res: Response) => {
   const { prompt } = req.body;
 
@@ -164,7 +102,7 @@ agentRouter.post('/api/v1/agent/procure', async (req: Request, res: Response) =>
   try {
     logTrace('INTENT_PARSING', `Parsing prompt: "${prompt}"`);
 
-    // Step A: Parse natural language into structured parameters using Groq
+    // Step A: Natural language extraction via Groq
     const parseCompletion = await groq.chat.completions.create({
       model: GROQ_MODEL,
       messages: [
@@ -176,8 +114,8 @@ Analyze the user's purchase command and extract:
 - quantity: Integer count of items wanted
 - maxBudgetPerUnit: Maximum INR the user is willing to pay per unit
 - targetInitialBid: Reasonable starting counter-bid in INR (e.g. 10-15% below maxBudget)
-
-Respond ONLY with valid JSON matching:
+- if the user does give nay inital or any range for price offer price with merchant msrp  for particluar sku that targeted
+Respond ONLY with valid JSON:
 {
   "skuQuery": string,
   "quantity": number,
@@ -194,14 +132,13 @@ Respond ONLY with valid JSON matching:
     const parsedIntent = JSON.parse(parseCompletion.choices[0]?.message?.content || '{}');
     logTrace('INTENT_EXTRACTED', `Extracted purchase parameters`, parsedIntent);
 
-    // Step B: Discover merchant catalog from database
+    // Step B: Match against merchant catalog
     const catalogRows = await query<any[]>(
       `SELECT p.sku, p.name, p.msrp, i.quantity_available as stock 
        FROM products p 
        JOIN inventory i ON p.id = i.product_id`
     );
 
-    // Groq matches the user query to the best matching product SKU
     const matchCompletion = await groq.chat.completions.create({
       model: GROQ_MODEL,
       messages: [
@@ -219,11 +156,29 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
     const matchedProduct = JSON.parse(matchCompletion.choices[0]?.message?.content || '{}');
     const targetSku = matchedProduct.selectedSku;
     logTrace('CATALOG_MATCHED', `Matched SKU: ${targetSku} (${matchedProduct.productName})`);
+const selectedProduct = catalogRows.find(
+  product => product.sku === targetSku
+);
 
-    // Step C: Autonomous Negotiation Loop
-    let currentBid = parsedIntent.targetInitialBid;
+if (!selectedProduct) {
+  throw new Error(`Product ${targetSku} not found in merchant catalog`);
+}
+
+const msrp = Number(selectedProduct.msrp);
+
+    let currentBid: number;
+    let maxBudgetPerUnit: number;
+if (parsedIntent.maxBudgetPerUnit != null) {
+  maxBudgetPerUnit = Number(parsedIntent.maxBudgetPerUnit);
+  currentBid =parsedIntent.targetInitialBid != null ? Number(parsedIntent.targetInitialBid): maxBudgetPerUnit;
+} else {
+  maxBudgetPerUnit = msrp;
+  currentBid = Math.round(msrp);
+
+}
+    let previousCounter: number | undefined = undefined;
     let round = 1;
-    const maxRounds = 3;
+    const maxRounds = 4;
     let finalNegotiationResult: any = null;
 
     while (round <= maxRounds) {
@@ -232,8 +187,9 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
       const negotiationResponse = await processBuyerNegotiation({
         sku: targetSku,
         quantity: parsedIntent.quantity,
-        offeredUnitPrice: currentBid,
+        offeredUnitPrice: currentBid ,
         buyerAgentId: 'autonomous_corporate_buyer',
+        previousCounterOffer: previousCounter, // Track state across turns
         buyerMessage: `Procurement requirement for ${parsedIntent.quantity} units.`,
       });
 
@@ -256,18 +212,30 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
 
       if (negotiationResponse.status === 'COUNTER_OFFER') {
         const counter = negotiationResponse.counterUnitPrice!;
+        previousCounter = counter; // Save counter for turn context
         logTrace('EVALUATING_COUNTER', `Merchant countered with ₹${counter}`);
 
         if (counter <= parsedIntent.maxBudgetPerUnit) {
           logTrace('COUNTER_ACCEPTED', `Counter price ₹${counter} is within budget cap ₹${parsedIntent.maxBudgetPerUnit}. Matching counter.`);
           currentBid = counter;
         } else {
-          logTrace('WALK_AWAY', `Counter price ₹${counter} exceeds max budget cap of ₹${parsedIntent.maxBudgetPerUnit}.`);
-          return res.json({
-            status: 'FAILED',
-            message: `Merchant refused to sell under your budget limit of ₹${parsedIntent.maxBudgetPerUnit}. Counter was ₹${counter}.`,
-            traces,
-          });
+          // If counter is higher than max budget, meet in the middle up to maxBudget
+          const concession = Math.min(
+            parsedIntent.maxBudgetPerUnit,
+            Math.round((currentBid + parsedIntent.maxBudgetPerUnit) / 2)
+          );
+
+          if (concession > currentBid) {
+            logTrace('CONCESSION_OFFERED', `Countering higher: ₹${concession} (Capped at budget limit)`);
+            currentBid = concession;
+          } else {
+            logTrace('WALK_AWAY', `Counter price ₹${counter} exceeds max budget cap of ₹${parsedIntent.maxBudgetPerUnit}.`);
+            return res.json({
+              status: 'FAILED',
+              message: `Merchant refused to sell under your budget limit of ₹${parsedIntent.maxBudgetPerUnit}. Counter was ₹${counter}.`,
+              traces,
+            });
+          }
         }
       }
 
@@ -282,7 +250,7 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
       });
     }
 
-    // Step D: Zero-Click Autonomous Payment Settlement via Headless Worker
+    // Step D: Headless / API Settlement
     logTrace('PAYMENT_INITIATION', `Deal accepted. Triggering autonomous payment on Razorpay...`, {
       paymentLink: finalNegotiationResult.razorpayPaymentLink,
     });
@@ -292,12 +260,48 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
     );
 
     if (paymentOutcome.success) {
-      logTrace('PAYMENT_COMPLETE', `Razorpay test transaction successfully authorized and captured.`);
+      logTrace('PAYMENT_COMPLETE', `Razorpay transaction successfully authorized and captured.`);
+
+      // Sync Order status in MySQL
+      if (finalNegotiationResult.orderId) {
+        await query(`UPDATE orders SET status = 'paid' WHERE id = ?`, [finalNegotiationResult.orderId]);
+      }
     } else {
       logTrace('PAYMENT_WARNING', `Payment link created, but headless checkout encountered: ${paymentOutcome.error}`);
     }
 
-    // Step E: Return full audit trail
+    // Step E: Autonomous Leg 2 Check (Auto-Restock Trigger)
+    let restockTriggered = false;
+    let restockDetails: any = null;
+
+    try {
+      const stockCheck = await query<any[]>(
+        `SELECT i.quantity_available as stock 
+         FROM inventory i 
+         JOIN products p ON i.product_id = p.id 
+         WHERE p.sku = ? LIMIT 1`,
+        [targetSku]
+      );
+
+      const remainingStock = stockCheck[0]?.stock ?? 0;
+      logTrace('STOCK_AUDIT', `Remaining stock for ${targetSku}: ${remainingStock} units.`);
+
+      // Trigger Leg 2 wholesale restock if remaining units <= 5
+      if (remainingStock <= 5) {
+        logTrace('RESTOCK_TRIGGERED', `Stock below threshold (${remainingStock} units remaining). Spawning Leg 2 Supplier Procurement.`);
+        restockDetails = await executeSupplierProcurement({
+          sku: targetSku,
+          quantityNeeded: 10,
+          triggerReason: 'STOCK_BELOW_THRESHOLD',
+          marketCondition: 'NORMAL',
+        });
+        restockTriggered = true;
+      }
+    } catch (restockErr: any) {
+      console.warn(`[Restock Handler Warning]:`, restockErr.message);
+    }
+
+    // Step F: Full audit trail response
     return res.json({
       status: 'SUCCESS',
       message: `Successfully procured ${parsedIntent.quantity}x ${targetSku} at ₹${finalNegotiationResult.agreedUnitPrice} each!`,
@@ -306,6 +310,8 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
       totalAmount: finalNegotiationResult.totalAmount,
       razorpayPaymentLink: finalNegotiationResult.razorpayPaymentLink,
       paymentExecuted: paymentOutcome.success,
+      restockTriggered,
+      restockDetails: restockTriggered ? restockDetails : undefined,
       traces,
     });
   } catch (error: any) {
@@ -315,5 +321,31 @@ Respond ONLY with JSON: { "selectedSku": string, "productName": string }`,
       error: error.message || 'Failed to complete autonomous procurement cycle.',
       traces,
     });
+  }
+});
+
+// 4. Standalone Wholesale Restock Endpoint
+agentRouter.post('/api/v1/agent/restock', async (req: Request, res: Response) => {
+  const { sku, quantity, marketCondition } = req.body;
+
+  if (!sku) {
+    return res.status(400).json({ error: 'SKU is required' });
+  }
+
+  try {
+    const result = await executeSupplierProcurement({
+      sku: String(sku),
+      quantityNeeded: quantity ? Number(quantity) : 10,
+      triggerReason: 'STOCK_BELOW_THRESHOLD',
+      marketCondition: marketCondition || 'SURGE_SHORTAGE',
+    });
+
+    return res.json({
+      status: 'SUCCESS',
+      message: `Autonomous wholesale negotiation resolved. Restocked ${result.quantity} units of ${sku}.`,
+      data: result,
+    });
+  } catch (error: any) {
+    return res.status(500).json({ status: 'ERROR', error: error.message });
   }
 });

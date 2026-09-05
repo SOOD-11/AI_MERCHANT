@@ -2,6 +2,41 @@ import type { ChatCompletionTool } from 'groq-sdk/resources/chat/completions';
 import { InventoryService } from '../services/inventoryService.js';
 import { requestSupplierQuote } from './supplierSimulator.js';
 import { checkPolicy } from '../policy/policyEngine.js';
+import { runSupplierTurn } from './supplierAgent.js';
+import { query } from '../db/connection.js';
+ export interface PolicyRules{
+maxAutonomousSpendInr: number,
+maxDiscountPercent: number,
+minGrossProfitMargin: number;
+
+}
+export const extractPoliciesFromDb = async (): Promise<PolicyRules> => {
+  const result = await query(`
+    SELECT
+      min_gross_margin_percent,
+      max_autonomous_spend_inr,
+      max_discount_percent
+    FROM policies
+    LIMIT 1
+  `);
+
+  const policy = result[0];
+
+  if (!policy) {
+    throw new Error("No policy found in database");
+  }
+
+  return {
+    maxAutonomousSpendInr: Number(policy.max_autonomous_spend_inr),
+    maxDiscountPercent: Number(policy.max_discount_percent),
+    minGrossProfitMargin: Number(policy.min_gross_margin_percent),
+  };
+};
+
+
+
+
+
 
 export const merchantTools: ChatCompletionTool[] = [
   {
@@ -66,7 +101,7 @@ export const merchantTools: ChatCompletionTool[] = [
           description: 'Your commercial decision on the deal.',
         },
         counterUnitPrice: {
-          type: 'number',
+          type: ['number', 'null'],
           description: 'Your chosen counter-offer unit price in INR if verdict is COUNTER_OFFER. You decide this based on MSRP, base cost, and buyer bid.',
         },
         reasoning: {
@@ -77,7 +112,23 @@ export const merchantTools: ChatCompletionTool[] = [
       required: ['verdict', 'reasoning'],
     },
   },
-}
+},
+
+{
+    type: 'function' as const,
+    function: {
+      name: 'request_supplier_rfq',
+      description: 'Call this when customer requested quantity exceeds on-hand inventory. Obtains an instant provisional wholesale quote and lead time from the wholesale supplier before committing to the customer.',
+      parameters: {
+        type: 'object',
+        properties: {
+          sku: { type: 'string', description: 'The product SKU' },
+          shortageQuantity: { type: 'number', description: 'Number of extra units needed from supplier' },
+        },
+        required: ['sku', 'shortageQuantity'],
+      },
+    },
+  },
 ];
 
 export const executeToolCall = async (name: string, args: any): Promise<any> => {
@@ -101,9 +152,12 @@ export const executeToolCall = async (name: string, args: any): Promise<any> => 
     }
 
     case 'evaluate_policy_rules': {
-      return checkPolicy({  minGrossMarginPercent: 15.0,
-        maxAutonomousSpendInr: 200000.0,
-        maxDiscountPercent: 20.0},{
+      const policies = await extractPoliciesFromDb();
+      return checkPolicy({
+        minGrossMarginPercent: policies.minGrossProfitMargin,
+        maxAutonomousSpendInr: policies.maxAutonomousSpendInr,
+        maxDiscountPercent: policies.maxDiscountPercent,
+      }, {
         offeredPrice: args.unitPrice,
         unitCost: args.unitCost,
         quantity: args.quantity,
@@ -116,6 +170,47 @@ case 'submit_merchant_verdict': {
         verdict: args.verdict || args.decision,
         counterUnitPrice: Number(args.counterUnitPrice),
         reasoning: args.reasoning,
+      };
+    }
+
+    case 'request_supplier_rfq': {
+      const { sku, shortageQuantity } = args;
+
+      // 1. Fetch supplier info
+      const suppliers = await query<any[]>(
+        `SELECT * FROM suppliers WHERE sku = ? LIMIT 1`,
+        [sku]
+      );
+
+      if (!suppliers || suppliers.length === 0) {
+        return {
+          available: false,
+          reason: `No registered wholesale supplier for SKU: ${sku}`,
+        };
+      }
+
+      const supplier = suppliers[0];
+      const baseCost = Number(supplier.wholesale_cost);
+
+      // 2. Query Supplier Agent for a live quote (Turn 1 RFQ)
+      const quoteResult = await runSupplierTurn({
+        sku,
+        quantity: shortageQuantity,
+        offeredUnitCost: baseCost,
+        baseWholesaleCost: baseCost,
+        marketCondition: 'NORMAL', // or 'SURGE_SHORTAGE'
+        turnNumber: 1,
+        conversationHistory: [],
+      });
+
+      const quotedUnitCost = quoteResult.counterUnitCost || quoteResult.agreedUnitCost || baseCost;
+
+      return {
+        available: quoteResult.decision !== 'REJECTED',
+        supplierName: supplier.name,
+        quotedUnitCost,
+        leadTimeDays: supplier.lead_time_days || 2,
+        supplierMessage: quoteResult.supplierMessage,
       };
     }
     default:

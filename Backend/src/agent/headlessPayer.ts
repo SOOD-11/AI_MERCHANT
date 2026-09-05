@@ -3,143 +3,99 @@ import puppeteer from 'puppeteer';
 export interface AutomatedPaymentResult {
   success: boolean;
   error?: string;
+  paymentMode: 'HEADLESS_BROWSER' | 'MANUAL_FALLBACK';
 }
 
 export const executeAutonomousRazorpayPayment = async (
   paymentLinkUrl: string
 ): Promise<AutomatedPaymentResult> => {
-  console.log(`🤖 [Autonomous Settler]: Launching native macOS Chrome window...`);
-  console.log(`🔗 Target Link: ${paymentLinkUrl}`);
+  console.log(`🤖 [Autonomous Settler]: Starting checkout on: ${paymentLinkUrl}`);
 
-  // Standard path for Google Chrome on macOS
-  const macChromePath = '/Applications/Google Chrome.app/Contents/MacOS/Google Chrome';
-
-  const browser = await puppeteer.launch({
-    headless: false,
-    executablePath: macChromePath, // Uses your native macOS Chrome app
-    args: [
-      '--no-sandbox',
-      '--disable-setuid-sandbox',
-      '--disable-blink-features=AutomationControlled',
-      '--window-size=1280,800',
-    ],
-    defaultViewport: null,
-  });
-
+  let browser: any = null;
   try {
-    const pages = await browser.pages();
-    const page = pages.length > 0 ? pages[0] : await browser.newPage();
-
-    console.log(`🌐 Navigating to: ${paymentLinkUrl}`);
-    await page.goto(paymentLinkUrl, { waitUntil: 'networkidle2', timeout: 45000 });
-
-    // Step A: Wait for user interaction or DOM load
-    await new Promise((r) => setTimeout(r, 2500));
-
-    // Step B: Direct Selector Click for UPI or Card
-    console.log(`🎯 Searching for payment options...`);
-
-    // In Razorpay standard checkout, payment instruments can be clicked directly
-    const handled = await page.evaluate(async () => {
-      // Find all clickable elements
-      const allElements = Array.from(document.querySelectorAll('button, div, span, p'));
-      
-      // Look for UPI option
-      const upiBtn = allElements.find((el) => {
-        const txt = el.textContent?.trim().toLowerCase() || '';
-        return txt === 'upi' || txt.includes('upi / qr');
-      }) as HTMLElement;
-
-      if (upiBtn) {
-        upiBtn.click();
-        return 'upi';
-      }
-
-      // Fallback to Card
-      const cardBtn = allElements.find((el) => {
-        const txt = el.textContent?.trim().toLowerCase() || '';
-        return txt === 'card' || txt.includes('cards');
-      }) as HTMLElement;
-
-      if (cardBtn) {
-        cardBtn.click();
-        return 'card';
-      }
-
-      return null;
+    browser = await puppeteer.launch({
+      headless: true, // Switch to false temporarily if you want to watch it work
+      args: ['--no-sandbox', '--disable-setuid-sandbox'],
+      defaultViewport: { width: 1280, height: 800 },
     });
 
-    console.log(`💳 Instrument clicked: ${handled || 'Standard/Direct'}`);
-    await new Promise((r) => setTimeout(r, 1500));
+    const page = await browser.newPage();
+    await page.goto(paymentLinkUrl, { waitUntil: 'networkidle2', timeout: 30000 });
 
-    // Step C: Enter Test UPI ID
-    if (handled === 'upi') {
-      const vpaFound = await page.evaluate(() => {
-        const input = document.querySelector('input[placeholder*="UPI"], input[name*="vpa"], input[type="text"]') as HTMLInputElement;
-        if (input) {
-          input.focus();
-          input.value = 'success@razorpay';
-          input.dispatchEvent(new Event('input', { bubbles: true }));
-          input.dispatchEvent(new Event('change', { bubbles: true }));
-          return true;
-        }
-        return false;
-      });
-
-      if (!vpaFound) {
-        await page.keyboard.type('success@razorpay', { delay: 40 });
+    // 1. Fill Phone / Contact form if prompted
+    const phoneInput = await page.$('input[name="contact"], input[type="tel"], #contact');
+    if (phoneInput) {
+      console.log('📱 Filling contact phone number...');
+      await phoneInput.type('9876543210', { delay: 50 });
+      
+      const proceedBtn = await page.$('button[type="submit"], #proceed');
+      if (proceedBtn) {
+        await proceedBtn.click();
+        await new Promise((r) => setTimeout(r, 1500));
       }
-
-      console.log(`✍️ Typed: success@razorpay`);
-      await new Promise((r) => setTimeout(r, 1000));
-
-      // Click Pay
-      await page.evaluate(() => {
-        const btns = Array.from(document.querySelectorAll('button'));
-        const pay = btns.find((b) => b.textContent?.toLowerCase().includes('pay'));
-        if (pay) pay.click();
-      });
     }
 
-    // Step D: Handle Bank Mock Sandbox OTP ("Success" button)
-    console.log(`🏦 Waiting for Mock Bank Authorization redirect...`);
-    let authorized = false;
+    // 2. Select NetBanking (The cleanest 1-click test rail in Razorpay Sandbox)
+    console.log('🏦 Selecting NetBanking (SBI / HDFC Test Mode)...');
+    const netbankingOption = await page.waitForSelector(
+      'div[data-method="netbanking"], button:has-text("Netbanking"), [tabindex="0"]:has-text("Netbanking")',
+      { timeout: 8000 }
+    ).catch(() => null);
 
-    for (let i = 0; i < 20; i++) {
-      for (const frame of page.frames()) {
-        const clicked = await frame.evaluate(() => {
-          const btns = Array.from(document.querySelectorAll('button, input[type="submit"], input[type="button"]'));
-          const successBtn = btns.find(
-            (b) => b.textContent?.trim().toLowerCase() === 'success' || (b as HTMLInputElement).value?.toLowerCase() === 'success'
-          ) as HTMLElement;
+    if (netbankingOption) {
+      await netbankingOption.click();
+      await new Promise((r) => setTimeout(r, 1000));
 
-          if (successBtn) {
-            successBtn.click();
-            return true;
-          }
-          return false;
-        });
+      // Pick the first available test bank (e.g. SBI or HDFC)
+      const bankRadio = await page.waitForSelector(
+        'input[type="radio"], [data-bank="SBIN"], [data-bank="HDFC"], .bank-item',
+        { timeout: 4000 }
+      ).catch(() => null);
 
-        if (clicked) {
-          console.log(`✅ Sandbox Bank Authorization 'Success' clicked!`);
-          authorized = true;
-          break;
-        }
+      if (bankRadio) {
+        await bankRadio.click();
       }
 
-      if (authorized) break;
-      await new Promise((r) => setTimeout(r, 1000));
+      // Click "Pay Now"
+      const payButton = await page.waitForSelector(
+        'button:has-text("Pay"), button[type="submit"]',
+        { timeout: 4000 }
+      ).catch(() => null);
+
+      if (payButton) {
+        await payButton.click();
+      }
+    } else {
+      // Fallback: Check if direct "Test Payment / Success" prompt is visible
+      const directSuccess = await page.$('button:has-text("Success")');
+      if (directSuccess) {
+        await directSuccess.click();
+      }
     }
 
-    // Keep open for 6 seconds so the browser receipt page finishes communicating with Razorpay
-    console.log(`⏳ Waiting for Razorpay server synchronization...`);
-    await new Promise((r) => setTimeout(r, 6000));
+    // 3. Handle Mock Bank Authorization Screen (Sandbox redirect)
+    console.log('⏳ Waiting for Sandbox Bank Authorization page...');
+    await new Promise((r) => setTimeout(r, 3000));
+
+    // Look across main page and any child iframes for the "Success" button
+    const pages = await browser.pages();
+    for (const p of pages) {
+      const successBtn = await p.$('button.success, button:has-text("Success"), #success');
+      if (successBtn) {
+        console.log('🎯 Mock Success button found. Authorizing payment...');
+        await successBtn.click();
+        await new Promise((r) => setTimeout(r, 3000));
+        await browser.close();
+        return { success: true, paymentMode: 'HEADLESS_BROWSER' };
+      }
+    }
 
     await browser.close();
-    return { success: true };
+    console.log('ℹ️ Automated click completed initial stages. Awaiting webhook sync.');
+    return { success: true, paymentMode: 'HEADLESS_BROWSER' };
   } catch (err: any) {
-    console.error(`❌ [Mac Chrome Error]:`, err.message);
-    await browser.close();
-    return { success: false, error: err.message };
+    if (browser) await browser.close();
+    console.warn(`⚠️ Headless automation fell back: ${err.message}`);
+    return { success: false, error: err.message, paymentMode: 'MANUAL_FALLBACK' };
   }
 };

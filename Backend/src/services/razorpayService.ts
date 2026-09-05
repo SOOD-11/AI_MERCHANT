@@ -14,8 +14,8 @@ amount: number;
 
 }
 const rzp= new Razorpay({
-key_id: process.env.RAZORPAY_KEY_ID||'rzp_test_TVCDbm7VMVcnRk',
-key_secret:process.env.RAZORPAY_KEY_SECRET || 'gf6use7P83lytR7YbarQ4Hac'
+key_id: process.env.RAZORPAYX_KEY_ID||'rzp_test_TVCDbm7VMVcnRk',
+key_secret:process.env.RAZORPAYX_KEY_SECRET || 'gf6use7P83lytR7YbarQ4Hac'
 
 });
 
